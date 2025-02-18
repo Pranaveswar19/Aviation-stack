@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import requests
 import openai
@@ -5,8 +6,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 import json
 import os
+from time import sleep
+from typing import Dict, List, Optional
 
-# Configure page settings
+# Configuration and Settings
 st.set_page_config(
     page_title="Flight Info Tracker",
     page_icon="✈️",
@@ -14,129 +17,237 @@ st.set_page_config(
 )
 
 # Initialize session state
+if 'api_calls' not in st.session_state:
+    st.session_state.api_calls = 0
+    
 if 'flight_search_done' not in st.session_state:
     st.session_state.flight_search_done = False
 
-if 'conversation_history' not in st.session_state:
-    st.session_state.conversation_history = []
+# Toggle this to True when API limit is reached
+USE_MOCK_DATA = True
 
-# API Configuration
-AVIATION_API_KEY = st.secrets["aviation_api_key"]
-OPENAI_API_KEY = st.secrets["openai_api_key"]
-AVIATION_API_BASE = "http://api.aviationstack.com/v1"
-
-def get_city_airports(city):
-    """Fetch airports for a given city using Aviation Stack API"""
-    endpoint = f"{AVIATION_API_BASE}/airports"
-    params = {
-        "access_key": AVIATION_API_KEY,
-        "city": city
-    }
-    
-    try:
-        response = requests.get(endpoint, params=params)
-        data = response.json()
+class FlightDataProvider:
+    def __init__(self, use_mock: bool = False):
+        self.use_mock = use_mock
+        self.aviation_api_key = st.secrets.get("aviation_api_key", "")
+        self.openai_api_key = st.secrets.get("openai_api_key", "")
         
-        if response.status_code == 200 and "data" in data:
-            return [{"iata": airport["iata_code"], 
-                    "name": airport["airport_name"]} 
-                    for airport in data["data"] 
-                    if airport["iata_code"]]
-        return []
-    except Exception as e:
-        st.error(f"Error fetching airports: {str(e)}")
-        return []
-
-def search_flights(departure_city, arrival_city, departure_date):
-    """Search for flights using Aviation Stack API"""
-    endpoint = f"{AVIATION_API_BASE}/flights"
-    params = {
-        "access_key": AVIATION_API_KEY,
-        "dep_iata": departure_city,
-        "arr_iata": arrival_city,
-        "flight_date": departure_date
-    }
+        # Initialize mock data
+        self._init_mock_data()
     
-    try:
-        response = requests.get(endpoint, params=params)
-        data = response.json()
-        
-        if response.status_code == 200 and "data" in data:
-            return data["data"]
-        return []
-    except Exception as e:
-        st.error(f"Error searching flights: {str(e)}")
-        return []
-
-def get_flight_price_estimate(departure_city, arrival_city, class_type="economy"):
-    """Get estimated flight price using OpenAI API"""
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
-    
-    prompt = f"""Based on current market trends, estimate the price range for a flight from {departure_city} to {arrival_city} in {class_type} class.
-    Provide the estimate in USD with a reasonable range. Consider factors like:
-    - Average prices for this route
-    - Seasonal variations
-    - Class of travel
-    
-    Format your response as a JSON object with:
-    - min_price
-    - max_price
-    - currency
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are a flight pricing expert."},
-                {"role": "user", "content": prompt}
+    def _init_mock_data(self):
+        """Initialize mock data for demo mode"""
+        self.mock_airports = {
+            "New York": [
+                {"iata": "JFK", "name": "John F. Kennedy International"},
+                {"iata": "LGA", "name": "LaGuardia Airport"}
             ],
-            temperature=0.7
-        )
+            "London": [
+                {"iata": "LHR", "name": "Heathrow Airport"},
+                {"iata": "LGW", "name": "Gatwick Airport"}
+            ],
+            "Tokyo": [
+                {"iata": "HND", "name": "Haneda Airport"},
+                {"iata": "NRT", "name": "Narita International"}
+            ],
+            "Dubai": [
+                {"iata": "DXB", "name": "Dubai International"}
+            ],
+            "Singapore": [
+                {"iata": "SIN", "name": "Changi Airport"}
+            ]
+        }
         
-        price_data = json.loads(response.choices[0].message.content)
-        return price_data
-    except Exception as e:
-        st.error(f"Error estimating price: {str(e)}")
-        return None
+        # Generate mock flight schedules
+        current_date = datetime.now()
+        self.mock_routes = {}
+        
+        route_pairs = [
+            ("JFK", "LHR"), ("LHR", "HND"), 
+            ("HND", "DXB"), ("DXB", "SIN")
+        ]
+        
+        airlines = [
+            ("BA", "British Airways"), 
+            ("AA", "American Airlines"),
+            ("EK", "Emirates"),
+            ("SQ", "Singapore Airlines")
+        ]
+        
+        for dep, arr in route_pairs:
+            flights = []
+            for airline_code, airline_name in airlines:
+                # Morning flight
+                flight_num = f"{airline_code}{100 + len(flights)}"
+                dep_time = current_date.replace(hour=8, minute=0)
+                arr_time = dep_time + timedelta(hours=8)
+                
+                flights.append({
+                    "flight": {"number": flight_num},
+                    "airline": {"name": airline_name},
+                    "departure": {"scheduled": dep_time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                    "arrival": {"scheduled": arr_time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                    "flight_status": "scheduled"
+                })
+                
+                # Evening flight
+                flight_num = f"{airline_code}{200 + len(flights)}"
+                dep_time = current_date.replace(hour=18, minute=0)
+                arr_time = dep_time + timedelta(hours=8)
+                
+                flights.append({
+                    "flight": {"number": flight_num},
+                    "airline": {"name": airline_name},
+                    "departure": {"scheduled": dep_time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                    "arrival": {"scheduled": arr_time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                    "flight_status": "scheduled"
+                })
+            
+            self.mock_routes[(dep, arr)] = flights
+        
+        # Mock price ranges
+        self.mock_prices = {
+            ("New York", "London"): {"min_price": 450, "max_price": 800, "currency": "USD"},
+            ("London", "Tokyo"): {"min_price": 700, "max_price": 1200, "currency": "USD"},
+            ("Tokyo", "Dubai"): {"min_price": 600, "max_price": 900, "currency": "USD"},
+            ("Dubai", "Singapore"): {"min_price": 400, "max_price": 700, "currency": "USD"}
+        }
 
-def format_flight_duration(departure_time, arrival_time):
-    """Calculate and format flight duration"""
-    try:
-        dep_time = datetime.fromisoformat(departure_time.replace('Z', '+00:00'))
-        arr_time = datetime.fromisoformat(arrival_time.replace('Z', '+00:00'))
-        duration = arr_time - dep_time
-        hours = duration.total_seconds() // 3600
-        minutes = (duration.total_seconds() % 3600) // 60
-        return f"{int(hours)}h {int(minutes)}m"
-    except:
-        return "Duration unavailable"
+    @st.cache_data(ttl=3600)
+    def get_city_airports(self, city: str) -> List[Dict]:
+        """Get airports for a city with caching"""
+        if self.use_mock:
+            return self.mock_airports.get(city, [])
+        
+        if st.session_state.api_calls >= 95:  # API limit safety
+            self.use_mock = True
+            return self.mock_airports.get(city, [])
+        
+        try:
+            st.session_state.api_calls += 1
+            sleep(1)  # Rate limiting
+            
+            response = requests.get(
+                "http://api.aviationstack.com/v1/airports",
+                params={
+                    "access_key": self.aviation_api_key,
+                    "city": city
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return [
+                    {
+                        "iata": airport["iata_code"],
+                        "name": airport["airport_name"]
+                    }
+                    for airport in data.get("data", [])
+                    if airport.get("iata_code")
+                ]
+            return []
+        except Exception as e:
+            st.warning(f"Using mock data due to API error: {str(e)}")
+            return self.mock_airports.get(city, [])
+
+    @st.cache_data(ttl=3600)
+    def search_flights(self, departure_city: str, arrival_city: str, 
+                      departure_date: str) -> List[Dict]:
+        """Search flights with caching"""
+        if self.use_mock:
+            route_key = (departure_city, arrival_city)
+            return self.mock_routes.get(route_key, [])
+        
+        if st.session_state.api_calls >= 95:
+            self.use_mock = True
+            return self.mock_routes.get((departure_city, arrival_city), [])
+        
+        try:
+            st.session_state.api_calls += 1
+            sleep(1)  # Rate limiting
+            
+            response = requests.get(
+                "http://api.aviationstack.com/v1/flights",
+                params={
+                    "access_key": self.aviation_api_key,
+                    "dep_iata": departure_city,
+                    "arr_iata": arrival_city,
+                    "flight_date": departure_date
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json().get("data", [])
+            return []
+        except Exception as e:
+            st.warning(f"Using mock data due to API error: {str(e)}")
+            return self.mock_routes.get((departure_city, arrival_city), [])
+
+    def get_flight_price_estimate(self, departure_city: str, 
+                                arrival_city: str) -> Optional[Dict]:
+        """Get price estimates"""
+        if self.use_mock:
+            route_key = (departure_city, arrival_city)
+            return self.mock_prices.get(route_key, {
+                "min_price": 500,
+                "max_price": 1000,
+                "currency": "USD"
+            })
+        
+        try:
+            client = openai.OpenAI(api_key=self.openai_api_key)
+            
+            prompt = f"""Estimate price range for a flight from {departure_city} to {arrival_city}.
+            Format response as JSON with min_price, max_price, and currency fields."""
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": "You are a flight pricing expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+            
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            st.warning(f"Using mock price data due to API error: {str(e)}")
+            return self.mock_prices.get((departure_city, arrival_city), {
+                "min_price": 500,
+                "max_price": 1000,
+                "currency": "USD"
+            })
 
 def main():
     st.title("✈️ Flight Information Tracker")
-    st.markdown("""
-    <style>
-    .flight-header {
-        color: #1E88E5;
-        font-size: 20px;
-        margin-bottom: 20px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
     
-    # Input form
+    # Initialize data provider
+    data_provider = FlightDataProvider(use_mock=USE_MOCK_DATA)
+    
+    # Show API call counter in sidebar
+    st.sidebar.metric("API Calls Made", st.session_state.api_calls)
+    
+    if USE_MOCK_DATA:
+        st.info("""
+        ℹ️ Currently using demo data due to API limits. 
+        Available demo routes: 
+        - New York (JFK) ↔️ London (LHR)
+        - London (LHR) ↔️ Tokyo (HND)
+        - Tokyo (HND) ↔️ Dubai (DXB)
+        - Dubai (DXB) ↔️ Singapore (SIN)
+        """)
+    
+    # Search form
     with st.form("flight_search_form"):
         col1, col2 = st.columns(2)
         
         with col1:
-            departure_city = st.text_input("Departure City", 
-                placeholder="Enter city name")
+            departure_city = st.text_input("Departure City")
             departure_date = st.date_input("Departure Date", 
                 min_value=datetime.today())
             
         with col2:
-            arrival_city = st.text_input("Arrival City", 
-                placeholder="Enter city name")
+            arrival_city = st.text_input("Arrival City")
             budget_range = st.slider("Budget Range (USD)", 
                 0, 5000, (200, 2000))
         
@@ -147,80 +258,64 @@ def main():
                 st.error("Please enter both departure and arrival cities.")
                 return
             
-            st.session_state.flight_search_done = True
-            
-            # Get airports for both cities
-            departure_airports = get_city_airports(departure_city)
-            arrival_airports = get_city_airports(arrival_city)
+            # Get airports
+            with st.spinner("Finding airports..."):
+                departure_airports = data_provider.get_city_airports(departure_city)
+                arrival_airports = data_provider.get_city_airports(arrival_city)
             
             if not departure_airports or not arrival_airports:
-                st.error("Could not find airports for one or both cities.")
+                st.error(f"No airports found for one or both cities. Available cities in demo mode: {', '.join(data_provider.mock_airports.keys())}")
                 return
             
             # Search flights
             flights = []
-            for dep_airport in departure_airports:
-                for arr_airport in arrival_airports:
-                    results = search_flights(
-                        dep_airport["iata"],
-                        arr_airport["iata"],
-                        departure_date.strftime("%Y-%m-%d")
-                    )
-                    flights.extend(results)
-            
-            if not flights:
-                st.warning("No flights found for the specified route and date.")
-                return
-            
-            # Get price estimate
-            price_estimate = get_flight_price_estimate(departure_city, arrival_city)
+            with st.spinner("Searching flights..."):
+                for dep_airport in departure_airports:
+                    for arr_airport in arrival_airports:
+                        results = data_provider.search_flights(
+                            dep_airport["iata"],
+                            arr_airport["iata"],
+                            departure_date.strftime("%Y-%m-%d")
+                        )
+                        flights.extend(results)
             
             # Display results
-            st.subheader("📊 Flight Information")
-            
-            # Price estimate card
-            if price_estimate:
-                with st.expander("💰 Estimated Price Range", expanded=True):
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Minimum Price", f"${price_estimate['min_price']}")
-                    col2.metric("Maximum Price", f"${price_estimate['max_price']}")
-                    col3.metric("Currency", price_estimate['currency'])
-            
-            # Flights table
-            flight_data = []
-            for flight in flights:
-                flight_data.append({
-                    "Flight Number": flight.get("flight", {}).get("number", "N/A"),
-                    "Airline": flight.get("airline", {}).get("name", "N/A"),
-                    "Departure": flight.get("departure", {}).get("scheduled", "N/A"),
-                    "Arrival": flight.get("arrival", {}).get("scheduled", "N/A"),
-                    "Duration": format_flight_duration(
-                        flight.get("departure", {}).get("scheduled", ""),
-                        flight.get("arrival", {}).get("scheduled", "")
-                    ),
-                    "Status": flight.get("flight_status", "N/A").title()
-                })
-            
-            if flight_data:
-                st.dataframe(
-                    pd.DataFrame(flight_data),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            
-            # Save search to history
-            st.session_state.conversation_history.append({
-                "departure": departure_city,
-                "arrival": arrival_city,
-                "date": departure_date.strftime("%Y-%m-%d"),
-                "budget": budget_range
-            })
-    
-    # Show search history
-    if st.session_state.conversation_history:
-        with st.expander("🕒 Search History"):
-            for idx, search in enumerate(st.session_state.conversation_history):
-                st.write(f"Search {idx + 1}: {search['departure']} to {search['arrival']} on {search['date']}")
+            if flights:
+                st.subheader("📊 Flight Information")
+                
+                # Get and display price estimate
+                with st.spinner("Estimating prices..."):
+                    price_estimate = data_provider.get_flight_price_estimate(
+                        departure_city, arrival_city)
+                
+                if price_estimate:
+                    with st.expander("💰 Estimated Price Range", expanded=True):
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Minimum Price", 
+                            f"${price_estimate['min_price']}")
+                        col2.metric("Maximum Price", 
+                            f"${price_estimate['max_price']}")
+                        col3.metric("Currency", price_estimate['currency'])
+                
+                # Display flights table
+                flight_data = []
+                for flight in flights:
+                    flight_data.append({
+                        "Flight Number": flight["flight"]["number"],
+                        "Airline": flight["airline"]["name"],
+                        "Departure": flight["departure"]["scheduled"],
+                        "Arrival": flight["arrival"]["scheduled"],
+                        "Status": flight["flight_status"].title()
+                    })
+                
+                if flight_data:
+                    st.dataframe(
+                        pd.DataFrame(flight_data),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            else:
+                st.warning("No flights found for the specified route and date.")
 
 if __name__ == "__main__":
     main()
