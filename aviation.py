@@ -38,11 +38,11 @@ class FlightDataProvider:
     def _init_mock_data(self):
         """Initialize mock data for demo mode"""
         self.mock_airports = {
-            "New York": [("JFK", "John F. Kennedy International"), ("LGA", "LaGuardia Airport")],
-            "London": [("LHR", "Heathrow Airport"), ("LGW", "Gatwick Airport")],
-            "Tokyo": [("HND", "Haneda Airport"), ("NRT", "Narita International")],
-            "Dubai": [("DXB", "Dubai International")],
-            "Singapore": [("SIN", "Changi Airport")]
+            "New York": (("JFK", "John F. Kennedy International"), ("LGA", "LaGuardia Airport")),
+            "London": (("LHR", "Heathrow Airport"), ("LGW", "Gatwick Airport")),
+            "Tokyo": (("HND", "Haneda Airport"), ("NRT", "Narita International")),
+            "Dubai": (("DXB", "Dubai International"),),
+            "Singapore": (("SIN", "Changi Airport"),)
         }
         
         # Generate mock flight schedules
@@ -90,7 +90,7 @@ class FlightDataProvider:
                     "flight_status": "scheduled"
                 })
             
-            self.mock_routes[(dep, arr)] = flights
+            self.mock_routes[(dep, arr)] = tuple(flights)  # Convert list to tuple
         
         # Mock price ranges
         self.mock_prices = {
@@ -102,34 +102,36 @@ class FlightDataProvider:
 
     @st.cache_data(ttl=3600)
     def get_city_airports(self, city: str):
-        """Get airports for a city with caching - Fixed unhashable type error"""
+        """Get airports for a city with caching (Fix: Returns immutable tuples)"""
         city = str(city)  # Ensure city is always a string (hashable)
 
         if self.use_mock:
-            return tuple(self.mock_airports.get(city, []))  # Convert list to tuple
+            return self.mock_airports.get(city, ())  # Ensure tuple return
 
-        if st.session_state.api_calls >= 95:  # API limit safety
+        if st.session_state.api_calls >= 95:  # API limit reached, switch to mock data
             self.use_mock = True
-            return tuple(self.mock_airports.get(city, []))
+            return self.mock_airports.get(city, ())
 
         try:
             st.session_state.api_calls += 1
             sleep(1)  # Rate limiting
-            
+
             response = requests.get(
                 "http://api.aviationstack.com/v1/airports",
                 params={"access_key": self.aviation_api_key, "city": city}
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
-                return tuple((airport["iata_code"], airport["airport_name"]) 
-                             for airport in data.get("data", []) 
-                             if airport.get("iata_code"))
-
+                return tuple(
+                    (airport["iata_code"], airport["airport_name"]) 
+                    for airport in data.get("data", []) 
+                    if airport.get("iata_code")
+                )
         except Exception as e:
             st.warning(f"Using mock data due to API error: {str(e)}")
-            return tuple(self.mock_airports.get(city, []))
+            return self.mock_airports.get(city, ())
+        
         return ()
 
 def main():
