@@ -62,13 +62,53 @@ def get_remaining_requests():
     Get the number of remaining API requests for the day
     """
     counter_data = load_request_counter()
-    # Assuming 100 requests per day limit
-    remaining = 100 - counter_data["count"]
+    # Free tier has 100 requests per month, estimating ~3 per day
+    remaining = 3 - counter_data["count"]
     return max(0, remaining)
 
-def get_flights(departure_date, departure_city, arrival_city):
+def test_api_connection():
+    """
+    Test the API connection and key validity
+    """
+    if not API_KEY:
+        return False, "API key is missing. Please check your .env file."
+    
+    # For free tier, use minimal parameters
+    params = {
+        'access_key': API_KEY,
+        'limit': 1  # Minimize data return
+    }
+    
+    try:
+        # Make a minimal API request to test connection
+        response = requests.get(BASE_URL, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            return True, "Connection successful"
+        elif response.status_code == 401:
+            return False, "Authentication failed: Invalid API key"
+        elif response.status_code == 403:
+            return False, "Access forbidden: Free tier limitations may apply"
+        else:
+            try:
+                error_data = response.json()
+                if 'error' in error_data:
+                    return False, f"API Error: {error_data['error']['info']}"
+            except:
+                pass
+            return False, f"API returned status code: {response.status_code}"
+            
+    except requests.exceptions.Timeout:
+        return False, "Request timed out. API service may be slow or unavailable."
+    except requests.exceptions.ConnectionError:
+        return False, "Connection error. Please check your internet connection."
+    except Exception as e:
+        return False, f"Error testing API connection: {str(e)}"
+
+def get_flights(departure_city=None, arrival_city=None):
     """
     Fetch flight details from Aviation Stack API
+    Adapted for free tier limitations
     """
     # Check remaining requests
     remaining_requests = get_remaining_requests()
@@ -76,39 +116,52 @@ def get_flights(departure_date, departure_city, arrival_city):
         st.error("API request limit reached for today. Please try again tomorrow.")
         return []
     
-    # Format date to YYYY-MM-DD for API
-    formatted_date = departure_date.strftime("%Y-%m-%d")
-    
+    # Free tier basic parameters (no date filtering available)
     params = {
         'access_key': API_KEY,
-        'flight_date': formatted_date,
-        'dep_iata': departure_city,
-        'arr_iata': arrival_city
+        'limit': 100  # Maximum allowed in free tier
     }
     
+    # Add airline filtering if provided
+    if departure_city:
+        params['dep_iata'] = departure_city
+    
+    if arrival_city:
+        params['arr_iata'] = arrival_city
+    
     try:
-        # Make API request
-        response = requests.get(BASE_URL, params=params)
+        # Make API request - use HTTP for free tier
+        response = requests.get(BASE_URL, params=params, timeout=15)
         
         # Increment the counter for this request
         increment_request_counter(1)
         
         if response.status_code == 200:
             data = response.json()
-            # Check if the API returned an error about limits
+            # Check if the API returned an error
             if 'error' in data:
-                st.error(f"API Error: {data['error']['info']}")
-                # If it's specifically a usage limit error, update our counter
-                if 'usage limit' in data['error']['info'].lower():
-                    counter_data = load_request_counter()
-                    counter_data["count"] = 100  # Set to limit
-                    save_request_counter(counter_data)
+                error_message = data['error']['info'] if 'info' in data['error'] else "Unknown API error"
+                st.error(f"API Error: {error_message}")
                 return []
             
+            # Return the data (free tier might have limited fields)
             return data['data'] if 'data' in data else []
+        elif response.status_code == 401:
+            st.error("Authentication failed: Invalid API key. Please check your API key in the .env file.")
+            return []
+        elif response.status_code == 403:
+            st.error("Access forbidden: The free tier has limitations on what data you can access.")
+            st.info("The free tier only allows basic flight data without date filtering and has restricted parameters.")
+            return []
         else:
             st.error(f"Error fetching data: {response.status_code}")
             return []
+    except requests.exceptions.Timeout:
+        st.error("Request timed out. The API service may be slow or unavailable.")
+        return []
+    except requests.exceptions.ConnectionError:
+        st.error("Connection error. Please check your internet connection.")
+        return []
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return []
@@ -116,6 +169,7 @@ def get_flights(departure_date, departure_city, arrival_city):
 def format_flight_data(flights):
     """
     Format flight data for display
+    Adapted for free tier which might have limited fields
     """
     if not flights:
         return pd.DataFrame()
@@ -123,15 +177,36 @@ def format_flight_data(flights):
     formatted_data = []
     for flight in flights:
         try:
-            flight_data = {
-                "Airline": flight['airline']['name'] if 'airline' in flight and 'name' in flight['airline'] else "Unknown",
-                "Flight Number": flight['flight']['number'] if 'flight' in flight and 'number' in flight['flight'] else "Unknown",
-                "Departure": flight['departure']['airport'] if 'departure' in flight and 'airport' in flight['departure'] else "Unknown",
-                "Departure Time": flight['departure']['scheduled'] if 'departure' in flight and 'scheduled' in flight['departure'] else "Unknown",
-                "Arrival": flight['arrival']['airport'] if 'arrival' in flight and 'airport' in flight['arrival'] else "Unknown",
-                "Arrival Time": flight['arrival']['scheduled'] if 'arrival' in flight and 'scheduled' in flight['arrival'] else "Unknown",
-                "Status": flight['flight_status'] if 'flight_status' in flight else "Unknown"
-            }
+            # Only extract fields that are available in free tier
+            flight_data = {}
+            
+            # Basic flight info
+            if 'flight' in flight:
+                flight_data["Flight Number"] = flight['flight'].get('number', 'Unknown')
+                flight_data["Flight IATA"] = flight['flight'].get('iata', 'Unknown')
+            
+            # Airline info (if available)
+            if 'airline' in flight:
+                flight_data["Airline"] = flight['airline'].get('name', 'Unknown')
+                flight_data["Airline IATA"] = flight['airline'].get('iata', 'Unknown')
+            
+            # Departure info
+            if 'departure' in flight:
+                flight_data["Departure Airport"] = flight['departure'].get('airport', 'Unknown')
+                flight_data["Departure IATA"] = flight['departure'].get('iata', 'Unknown')
+                if 'scheduled' in flight['departure']:
+                    flight_data["Scheduled Departure"] = flight['departure']['scheduled']
+            
+            # Arrival info
+            if 'arrival' in flight:
+                flight_data["Arrival Airport"] = flight['arrival'].get('airport', 'Unknown')
+                flight_data["Arrival IATA"] = flight['arrival'].get('iata', 'Unknown')
+                if 'scheduled' in flight['arrival']:
+                    flight_data["Scheduled Arrival"] = flight['arrival']['scheduled']
+            
+            # Status
+            flight_data["Status"] = flight.get('flight_status', 'Unknown')
+            
             formatted_data.append(flight_data)
         except Exception as e:
             st.warning(f"Error processing flight data: {str(e)}")
@@ -140,26 +215,39 @@ def format_flight_data(flights):
 
 def main():
     st.title("Flight Search Chatbot 🛫")
+    st.caption("Using Aviation Stack API (Free Tier)")
     
     # Check if API key is available
     if not API_KEY:
         st.error("AviationStack API key not found. Please set the AVIATION_STACK_API_KEY environment variable.")
         st.info("You can get an API key from https://aviationstack.com/")
+        
+        # Display how to set up env file
+        with st.expander("How to set up your API key"):
+            st.code("""
+# Create a file named .env in the same directory as your app.py
+# Add this line to the file:
+AVIATION_STACK_API_KEY=your_api_key_here
+            """)
         return
-    
+        
     # Display remaining API requests
     remaining_requests = get_remaining_requests()
     request_status = st.empty()  # Create placeholder for dynamic updating
-    request_status.info(f"Remaining API requests today: {remaining_requests}/100")
+    request_status.info(f"Remaining API requests today: {remaining_requests}/3 (Free Tier)")
+    
+    # Free tier info notice
+    st.warning("""
+    ⚠️ Free Tier Limitations:
+    - Limited to 100 requests per month (~3 per day)
+    - No date filtering capability
+    - Only real-time flight data
+    - Limited response fields
+    - HTTP only (not HTTPS)
+    """)
     
     # Sidebar for inputs
     st.sidebar.header("Search Flights")
-    
-    # Date selector
-    st.sidebar.subheader("Select Travel Date")
-    min_date = datetime.now().date()
-    max_date = min_date + timedelta(days=365)
-    departure_date = st.sidebar.date_input("Departure Date", min_value=min_date, max_value=max_date, value=min_date)
     
     # Airport inputs (using IATA codes)
     st.sidebar.subheader("Enter Airport IATA Codes")
@@ -177,31 +265,37 @@ def main():
         st.write("You can find more codes by searching online for 'IATA airport codes'.")
     
     # Search button (disabled if no requests remaining)
-    search_button = st.sidebar.button("Search Flights", disabled=(remaining_requests <= 0))
+    search_button = st.sidebar.button("Search Real-time Flights", disabled=(remaining_requests <= 0))
     
     # Display results
     if search_button:
         with st.spinner("Searching for flights..."):
-            st.subheader(f"Flights from {departure_city} to {arrival_city} on {departure_date}")
+            st.subheader(f"Real-time Flights from {departure_city} to {arrival_city}")
+            st.caption("Note: Free tier only provides current flight data, not future flights")
             
-            flights = get_flights(departure_date, departure_city, arrival_city)
+            # Make API call adapted for free tier
+            flights = get_flights(departure_city, arrival_city)
             
             # Update request counter display after API call
-            request_status.info(f"Remaining API requests today: {get_remaining_requests()}/100")
+            request_status.info(f"Remaining API requests today: {get_remaining_requests()}/3 (Free Tier)")
             
             if not flights:
-                st.info("No flights found for your search criteria. Try changing your search parameters.")
+                st.info("No flights found for your search criteria or API limitations encountered.")
+                st.info("The free tier only provides current flights in real-time.")
             else:
                 flight_df = format_flight_data(flights)
                 if not flight_df.empty:
                     st.dataframe(flight_df)
+                    
+                    # Display total flights found
+                    st.success(f"Found {len(flight_df)} flights matching your criteria.")
                     
                     # Download option
                     csv = flight_df.to_csv(index=False)
                     st.download_button(
                         label="Download flight data as CSV",
                         data=csv,
-                        file_name=f"flights_{departure_city}_to_{arrival_city}_{departure_date}.csv",
+                        file_name=f"flights_{departure_city}_to_{arrival_city}_realtime.csv",
                         mime="text/csv"
                     )
                 else:
@@ -210,19 +304,26 @@ def main():
     # Show welcome message on initial load
     if not search_button:
         st.write("👋 Welcome to the Flight Search Chatbot!")
-        st.write("Please use the sidebar to search for flights.")
-        st.write("1. Select your travel date")
-        st.write("2. Enter departure and arrival airport codes")
-        st.write("3. Click 'Search Flights' to see available options")
+        st.write("This application uses the Aviation Stack API **free tier** which has certain limitations.")
+        st.write("1. Enter departure and arrival airport codes")
+        st.write("2. Click 'Search Real-time Flights' to see current flights")
+        st.write("3. Please note that the free tier only provides real-time flight data and not future flights")
         
-        # Show API limit info
-        st.info("This application uses the AviationStack API which has a limit of 100 requests per day. Each search uses 1 request.")
+        # Connection test
+        with st.expander("Test API Connection"):
+            if st.button("Test Connection"):
+                success, message = test_api_connection()
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
 
     # Admin section for managing API usage (expandable)
     with st.expander("Admin: API Usage Information"):
         counter_data = load_request_counter()
         st.write(f"Date: {counter_data['date']}")
-        st.write(f"Requests used today: {counter_data['count']}/100")
+        st.write(f"Requests used today: {counter_data['count']}/3")
+        st.write(f"Monthly estimate: {counter_data['count'] * 30}/100 (Free tier limit)")
         
         if st.button("Reset Counter"):
             today = datetime.now().strftime("%Y-%m-%d")
