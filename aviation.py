@@ -6,14 +6,11 @@ import os
 import json
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Get API key from environment variable
 API_KEY = os.getenv("AVIATION_STACK_API_KEY")
 BASE_URL = "http://api.aviationstack.com/v1/flights"
 
-# Define path for the request counter file
 REQUEST_COUNTER_FILE = "api_request_counter.json"
 
 def load_request_counter():
@@ -25,7 +22,6 @@ def load_request_counter():
             with open(REQUEST_COUNTER_FILE, "r") as file:
                 counter_data = json.load(file)
                 
-                # Check if we need to reset the counter (new day)
                 today = datetime.now().strftime("%Y-%m-%d")
                 if counter_data.get("date") != today:
                     counter_data = {"date": today, "count": 0}
@@ -34,7 +30,6 @@ def load_request_counter():
         except Exception as e:
             st.error(f"Error loading request counter: {str(e)}")
     
-    # Initialize with today's date if file doesn't exist
     today = datetime.now().strftime("%Y-%m-%d")
     return {"date": today, "count": 0}
 
@@ -62,7 +57,6 @@ def get_remaining_requests():
     Get the number of remaining API requests for the day
     """
     counter_data = load_request_counter()
-    # Free tier has 100 requests per month, estimating ~3 per day
     remaining = 3 - counter_data["count"]
     return max(0, remaining)
 
@@ -73,14 +67,12 @@ def test_api_connection():
     if not API_KEY:
         return False, "API key is missing. Please check your .env file."
     
-    # For free tier, use minimal parameters
     params = {
         'access_key': API_KEY,
-        'limit': 1  # Minimize data return
+        'limit': 1  
     }
     
     try:
-        # Make a minimal API request to test connection
         response = requests.get(BASE_URL, params=params, timeout=10)
         
         if response.status_code == 200:
@@ -110,19 +102,16 @@ def get_flights(departure_city=None, arrival_city=None):
     Fetch flight details from Aviation Stack API
     Adapted for free tier limitations
     """
-    # Check remaining requests
     remaining_requests = get_remaining_requests()
     if remaining_requests <= 0:
         st.error("API request limit reached for today. Please try again tomorrow.")
         return []
     
-    # Free tier basic parameters (no date filtering available)
     params = {
         'access_key': API_KEY,
-        'limit': 100  # Maximum allowed in free tier
+        'limit': 100  
     }
     
-    # Add airline filtering if provided
     if departure_city:
         params['dep_iata'] = departure_city
     
@@ -130,21 +119,17 @@ def get_flights(departure_city=None, arrival_city=None):
         params['arr_iata'] = arrival_city
     
     try:
-        # Make API request - use HTTP for free tier
         response = requests.get(BASE_URL, params=params, timeout=15)
         
-        # Increment the counter for this request
         increment_request_counter(1)
         
         if response.status_code == 200:
             data = response.json()
-            # Check if the API returned an error
             if 'error' in data:
                 error_message = data['error']['info'] if 'info' in data['error'] else "Unknown API error"
                 st.error(f"API Error: {error_message}")
                 return []
             
-            # Return the data (free tier might have limited fields)
             return data['data'] if 'data' in data else []
         elif response.status_code == 401:
             st.error("Authentication failed: Invalid API key. Please check your API key in the .env file.")
@@ -177,34 +162,28 @@ def format_flight_data(flights):
     formatted_data = []
     for flight in flights:
         try:
-            # Only extract fields that are available in free tier
             flight_data = {}
             
-            # Basic flight info
             if 'flight' in flight:
                 flight_data["Flight Number"] = flight['flight'].get('number', 'Unknown')
                 flight_data["Flight IATA"] = flight['flight'].get('iata', 'Unknown')
             
-            # Airline info (if available)
             if 'airline' in flight:
                 flight_data["Airline"] = flight['airline'].get('name', 'Unknown')
                 flight_data["Airline IATA"] = flight['airline'].get('iata', 'Unknown')
             
-            # Departure info
             if 'departure' in flight:
                 flight_data["Departure Airport"] = flight['departure'].get('airport', 'Unknown')
                 flight_data["Departure IATA"] = flight['departure'].get('iata', 'Unknown')
                 if 'scheduled' in flight['departure']:
                     flight_data["Scheduled Departure"] = flight['departure']['scheduled']
             
-            # Arrival info
             if 'arrival' in flight:
                 flight_data["Arrival Airport"] = flight['arrival'].get('airport', 'Unknown')
                 flight_data["Arrival IATA"] = flight['arrival'].get('iata', 'Unknown')
                 if 'scheduled' in flight['arrival']:
                     flight_data["Scheduled Arrival"] = flight['arrival']['scheduled']
             
-            # Status
             flight_data["Status"] = flight.get('flight_status', 'Unknown')
             
             formatted_data.append(flight_data)
@@ -217,12 +196,10 @@ def main():
     st.title("Flight Search Chatbot 🛫")
     st.caption("Using Aviation Stack API (Free Tier)")
     
-    # Check if API key is available
     if not API_KEY:
         st.error("AviationStack API key not found. Please set the AVIATION_STACK_API_KEY environment variable.")
         st.info("You can get an API key from https://aviationstack.com/")
         
-        # Display how to set up env file
         with st.expander("How to set up your API key"):
             st.code("""
 # Create a file named .env in the same directory as your app.py
@@ -231,12 +208,10 @@ AVIATION_STACK_API_KEY=your_api_key_here
             """)
         return
         
-    # Display remaining API requests
     remaining_requests = get_remaining_requests()
-    request_status = st.empty()  # Create placeholder for dynamic updating
+    request_status = st.empty()  
     request_status.info(f"Remaining API requests today: {remaining_requests}/3 (Free Tier)")
     
-    # Free tier info notice
     st.warning("""
     ⚠️ Free Tier Limitations:
     - Limited to 100 requests per month (~3 per day)
@@ -246,15 +221,12 @@ AVIATION_STACK_API_KEY=your_api_key_here
     - HTTP only (not HTTPS)
     """)
     
-    # Sidebar for inputs
     st.sidebar.header("Search Flights")
     
-    # Airport inputs (using IATA codes)
     st.sidebar.subheader("Enter Airport IATA Codes")
     departure_city = st.sidebar.text_input("Departure City (IATA code, e.g., LAX)", "LAX")
     arrival_city = st.sidebar.text_input("Arrival City (IATA code, e.g., JFK)", "JFK")
     
-    # Help info about IATA codes
     with st.sidebar.expander("Not sure about IATA codes?"):
         st.write("IATA codes are 3-letter airport codes. Examples:")
         st.write("- LAX: Los Angeles")
@@ -264,19 +236,15 @@ AVIATION_STACK_API_KEY=your_api_key_here
         st.write("- CDG: Paris Charles de Gaulle")
         st.write("You can find more codes by searching online for 'IATA airport codes'.")
     
-    # Search button (disabled if no requests remaining)
     search_button = st.sidebar.button("Search Real-time Flights", disabled=(remaining_requests <= 0))
     
-    # Display results
     if search_button:
         with st.spinner("Searching for flights..."):
             st.subheader(f"Real-time Flights from {departure_city} to {arrival_city}")
             st.caption("Note: Free tier only provides current flight data, not future flights")
             
-            # Make API call adapted for free tier
             flights = get_flights(departure_city, arrival_city)
             
-            # Update request counter display after API call
             request_status.info(f"Remaining API requests today: {get_remaining_requests()}/3 (Free Tier)")
             
             if not flights:
@@ -287,10 +255,8 @@ AVIATION_STACK_API_KEY=your_api_key_here
                 if not flight_df.empty:
                     st.dataframe(flight_df)
                     
-                    # Display total flights found
                     st.success(f"Found {len(flight_df)} flights matching your criteria.")
                     
-                    # Download option
                     csv = flight_df.to_csv(index=False)
                     st.download_button(
                         label="Download flight data as CSV",
@@ -301,7 +267,6 @@ AVIATION_STACK_API_KEY=your_api_key_here
                 else:
                     st.info("No valid flight data found for your search criteria.")
     
-    # Show welcome message on initial load
     if not search_button:
         st.write("👋 Welcome to the Flight Search Chatbot!")
         st.write("This application uses the Aviation Stack API **free tier** which has certain limitations.")
@@ -309,7 +274,6 @@ AVIATION_STACK_API_KEY=your_api_key_here
         st.write("2. Click 'Search Real-time Flights' to see current flights")
         st.write("3. Please note that the free tier only provides real-time flight data and not future flights")
         
-        # Connection test
         with st.expander("Test API Connection"):
             if st.button("Test Connection"):
                 success, message = test_api_connection()
@@ -318,7 +282,6 @@ AVIATION_STACK_API_KEY=your_api_key_here
                 else:
                     st.error(message)
 
-    # Admin section for managing API usage (expandable)
     with st.expander("Admin: API Usage Information"):
         counter_data = load_request_counter()
         st.write(f"Date: {counter_data['date']}")
@@ -329,7 +292,6 @@ AVIATION_STACK_API_KEY=your_api_key_here
             today = datetime.now().strftime("%Y-%m-%d")
             save_request_counter({"date": today, "count": 0})
             st.success("Counter reset successfully!")
-            # Force reload to update displayed values
             st.experimental_rerun()
 
 if __name__ == "__main__":
